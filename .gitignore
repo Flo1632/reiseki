@@ -1,0 +1,42 @@
+# ── Personal data / agent-generated files ─────────────────────────────────────
+agent/agent_memory.db
+agent/*.docx
+agent/*.xlsx
+agent/*.csv
+agent/*.png
+
+# Generated files in root
+*.docx
+*.xlsx
+*.csv
+*.png
+
+# ── Python ────────────────────────────────────────────────────────────────────
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── Windows WSL2 artefacts ────────────────────────────────────────────────────
+*:Zone.Identifier
+Screenshot*.png
+
+# ── Development / planning notes ──────────────────────────────────────────────
+additional_tasks_*.md
+Additional\ Tasks_*.md
+ERKLAERUNG.md
+ENHANCED_REACT_LOOP.md
+TELEGRAM.md
+SKILLS.md
+CLAUDE.md
+INSTALL.md
+GIT_CLEANUP.md
+.claude/
+
+# ── Installer build artifacts ─────────────────────────────────────────────────
+installer/windows/python-embed/
+installer/windows/get-pip.py
+installer/windows/dist/
+installer/macos/dist/
