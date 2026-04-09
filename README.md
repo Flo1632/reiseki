@@ -43,7 +43,7 @@ ollama pull qwen2.5-coder:7b
 ### 2. Clone and install dependencies
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/reiseki.git
+git clone https://github.com/Flo1632/reiseki.git
 cd reiseki
 pip install -r requirements.txt
 ```
