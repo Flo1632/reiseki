@@ -2,7 +2,7 @@ fastapi>=0.115.0,<1.0.0
 uvicorn>=0.32.0,<1.0.0
 ollama>=0.4.0,<1.0.0
 pydantic>=2.10.0,<3.0.0
-ddgs>=6.0,<8.0
+ddgs>=9.0,<10.0
 qrcode>=7.4,<8.0
 Pillow>=12.1.1,<13.0        # >=12.1.1 required: CVE-2026-25990 (OOB write) fixed in 12.1.1
 pywebview>=5.0,<6.0
