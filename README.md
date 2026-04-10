@@ -129,7 +129,7 @@ AGENT_MODEL=qwen2.5-coder:14b AGENT_ROOT=~/documents python agent/agent.py
 | Data validation | Pydantic v2 |
 | Persistent memory | SQLite |
 | Desktop wrapper | pywebview |
-| Frontend | Vanilla HTML/CSS/JS (sepia dark theme) |
+| Frontend | Vanilla HTML/CSS/JS |
 
 ---
 
