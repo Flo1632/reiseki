@@ -18,7 +18,7 @@ Accessible as a web app in your browser or as a native desktop window (via pyweb
 - **Appointments** — schedule reminders with toast notifications in the UI
 - **Document creation** — generate `.docx`, `.xlsx`, `.csv` files on request
 - **Data analysis & charts** — analyse tabular data and render matplotlib charts
-- **QR code access** — scan to open the UI from your phone on the same Wi-Fi
+- **QR code access** — scan to open the UI from your phone on the same Wi-Fi **NOT YET WORKING, will be targeted in next release**
 - **Desktop launcher** — opens in a native window via `pywebview`
 - **Streaming responses** — token-by-token output via Server-Sent Events
 
@@ -40,7 +40,12 @@ Accessible as a web app in your browser or as a native desktop window (via pyweb
 ollama pull qwen2.5-coder:7b
 ```
 
-### 2. Clone and install dependencies
+### 2.1 Download the ReisekiSetup.exe for Windows / Reiseki.dmg for Mac
+Follow the instructions of the installer
+
+OR
+
+### 2.2 Clone and install dependencies
 
 ```bash
 git clone https://github.com/Flo1632/reiseki.git
