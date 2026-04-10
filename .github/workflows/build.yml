@@ -1,0 +1,153 @@
+name: Build Installers
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Minimal permissions by default — only the release job gets write access
+permissions:
+  contents: read
+
+jobs:
+  # ── Windows: PyInstaller + Inno Setup ──────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build app with PyInstaller
+        working-directory: agent
+        shell: pwsh
+        run: |
+          pyinstaller --onedir --windowed --name Reiseki `
+            --hidden-import uvicorn.logging `
+            --hidden-import uvicorn.loops `
+            --hidden-import uvicorn.loops.auto `
+            --hidden-import uvicorn.protocols `
+            --hidden-import uvicorn.protocols.http `
+            --hidden-import uvicorn.protocols.http.auto `
+            --hidden-import uvicorn.protocols.http.h11_impl `
+            --hidden-import uvicorn.lifespan `
+            --hidden-import uvicorn.lifespan.on `
+            --hidden-import webview.platforms.winforms `
+            --hidden-import fastapi.routing `
+            --hidden-import fastapi.middleware.cors `
+            launcher.py
+
+      - name: Build Windows installer with Inno Setup
+        shell: pwsh
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          # Use env var — avoids injecting the tag name directly into the shell command
+          $version = $env:TAG_NAME.TrimStart('v')
+          iscc /DAppVersion=$version installer\windows\reiseki.iss
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Reiseki-Windows-Installer
+          path: installer/windows/Output/ReisekiSetup.exe
+          retention-days: 7
+
+  # ── macOS: PyInstaller + create-dmg ────────────────────────────────────────
+  build-macos:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build app with PyInstaller
+        working-directory: agent
+        run: |
+          pyinstaller --onedir --windowed --name Reiseki \
+            --hidden-import uvicorn.logging \
+            --hidden-import uvicorn.loops \
+            --hidden-import uvicorn.loops.auto \
+            --hidden-import uvicorn.protocols \
+            --hidden-import uvicorn.protocols.http \
+            --hidden-import uvicorn.protocols.http.auto \
+            --hidden-import uvicorn.protocols.http.h11_impl \
+            --hidden-import uvicorn.lifespan \
+            --hidden-import uvicorn.lifespan.on \
+            --hidden-import webview.platforms.cocoa \
+            --hidden-import fastapi.routing \
+            --hidden-import fastapi.middleware.cors \
+            launcher.py
+
+      - name: Create DMG
+        working-directory: agent
+        run: |
+          create-dmg \
+            --volname "Reiseki" \
+            --window-size 540 380 \
+            --icon-size 128 \
+            --icon "Reiseki.app" 130 190 \
+            --app-drop-link 400 190 \
+            dist/Reiseki.dmg \
+            dist/Reiseki.app
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: Reiseki-macOS
+          path: agent/dist/Reiseki.dmg
+          retention-days: 7
+
+  # ── Release: collect artifacts and publish ─────────────────────────────────
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # required to create a GitHub Release
+
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Reiseki-Windows-Installer
+          path: artifacts/windows
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Reiseki-macOS
+          path: artifacts/macos
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$TAG_NAME" \
+            --generate-notes \
+            artifacts/windows/ReisekiSetup.exe \
+            artifacts/macos/Reiseki.dmg
