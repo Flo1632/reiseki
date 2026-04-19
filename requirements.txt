@@ -12,3 +12,5 @@ xlrd>=2.0.1,<3.0.0
 pandas>=2.2.0,<3.0.0
 matplotlib>=3.9.0,<4.0.0
 python-multipart>=0.0.18,<1.0.0 # >=0.0.18 required: CVE-2024-24762 (ReDoS) + CVE-2024-53981 (DoS)
+pdfplumber>=0.11.0,<1.0.0
+fpdf2>=2.7.0,<3.0.0
