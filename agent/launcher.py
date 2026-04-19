@@ -22,8 +22,9 @@ from agent import app, MODEL, ROOT, _local_ip
 
 
 def _start_server() -> None:
-    """Run uvicorn in a background daemon thread (localhost only)."""
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="error")
+    """Run uvicorn on all interfaces so the LAN toggle in the QR modal works.
+    Non-localhost requests are blocked by LANGuardMiddleware unless the user enables LAN access."""
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="error")
 
 
 if __name__ == "__main__":
