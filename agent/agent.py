@@ -31,10 +31,11 @@ from pydantic import BaseModel
 import ollama
 
 # ── Config ───────────────────────────────────────────────────────────────────
-MODEL                  = os.environ.get("AGENT_MODEL", "qwen2.5-coder:7b")
+MODEL                  = os.environ.get("AGENT_MODEL", "gemma4:e2b")
 ORIGINAL_ROOT          = Path(os.environ.get("AGENT_ROOT", ".")).resolve()
 ROOT                   = ORIGINAL_ROOT
-HOST                   = os.environ.get("AGENT_HOST", "127.0.0.1")
+_lan_access: bool      = False   # toggled at runtime; persisted to SQLite
+_lan_access_lock       = threading.Lock()
 DB_PATH                = Path(__file__).parent / "agent_memory.db"
 CONTEXT_COMPRESS_AFTER = 4   # compress history after this many tool calls per turn
 HISTORY_MAX_MESSAGES   = 20  # max messages kept across turns before compression
@@ -97,6 +98,10 @@ def _init_db() -> None:
 
 _init_db()
 
+def _load_lan_access() -> None:
+    global _lan_access
+    _lan_access = _cfg_get("lan_access", "0") == "1"
+
 def _warmup_model() -> None:
     """Load the model into Ollama's memory at startup so the first user request is fast."""
     try:
@@ -123,6 +128,8 @@ def _cfg_get(key: str, default: str = "") -> str:
 def _cfg_set(key: str, value: str) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?,?)", (key, value))
+
+_load_lan_access()
 
 def _relevant_memories(query: str, top_k: int = MEMORY_TOP_K) -> list[tuple]:
     """Return top-K memories scored by relevance to query (overlap + importance + recency)."""
@@ -213,12 +220,19 @@ def read_file(path: str) -> str:
             import pandas as pd
             df = pd.read_excel(t)
             content = df.to_string(index=False)
+        elif suffix == ".pdf":
+            import pdfplumber
+            with pdfplumber.open(str(t)) as pdf:
+                content = "\n".join(page.extract_text() or "" for page in pdf.pages)
+            if not content.strip():
+                return "PDF contains no extractable text."
         else:
             content = t.read_text(encoding="utf-8")
         return content[:8000] + "\n[... truncated]" if len(content) > 8000 else content
     except Exception as e:
         logger.error("read_file(%s): %s", path, e)
         return "Error: Could not read file"
+
 
 _PROTECTED_FILES = {
     "agent.py", "launcher.py", "CLAUDE.md", "agent_memory.db",
@@ -362,6 +376,47 @@ def create_docx(path: str, content: str) -> str:
     except Exception as e:
         logger.error("create_docx(%s): %s", path, e)
         return "Error: Could not create Word document"
+
+def create_pdf(path: str, content: str) -> str:
+    """Create a PDF file with the given text content."""
+    t = _safe(path)
+    if not t:
+        return "Error: Path is outside the root directory"
+    if t.exists():
+        return f"Error: File '{path}' already exists."
+    try:
+        from fpdf import FPDF
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_auto_page_break(auto=True, margin=15)
+
+        # Try to find a Unicode-capable system font
+        _unicode_font_candidates = [
+            r"C:\Windows\Fonts\arial.ttf",           # Windows
+            "/Library/Fonts/Arial.ttf",               # macOS
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",       # Linux
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        ]
+        _font_path = next((p for p in _unicode_font_candidates if os.path.exists(p)), None)
+        if _font_path:
+            pdf.add_font("Unicode", fname=_font_path)
+            pdf.set_font("Unicode", size=11)
+        else:
+            pdf.set_font("Helvetica", size=11)
+            content = content.encode("latin-1", errors="replace").decode("latin-1")
+
+        for line in content.split("\n"):
+            if line.strip():
+                pdf.multi_cell(w=pdf.epw, h=None, text=line, new_x="LMARGIN", new_y="NEXT")
+            else:
+                pdf.ln(pdf.font_size)
+        t.parent.mkdir(parents=True, exist_ok=True)
+        pdf.output(str(t))
+        return f"✅ PDF created: {path}"
+    except Exception as e:
+        logger.error("create_pdf(%s): %s", path, e)
+        return f"Error: Could not create PDF — {e}"
 
 def create_xlsx(path: str, rows_json: str, **kwargs) -> str:
     """Create an Excel file. rows_json is either:
@@ -560,9 +615,10 @@ _TOOL_META: dict[str, dict] = {
     "list_memories":    {"always": False, "when_to_use": "recall memory remember what do you know history stored"},
     "add_appointment":  {"always": False, "when_to_use": "schedule appointment meeting reminder event deadline calendar"},
     "list_appointments":{"always": False, "when_to_use": "show appointments schedule calendar upcoming events deadlines"},
-    "create_docx":      {"always": False, "when_to_use": "create word document docx report letter write formatted"},
-    "create_xlsx":      {"always": False, "when_to_use": "create excel spreadsheet xlsx table structured data rows columns"},
-    "create_csv":       {"always": False, "when_to_use": "create csv file table rows columns data export comma separated"},
+    "create_docx":      {"always": True,  "when_to_use": "create word document docx report letter write formatted"},
+    "create_pdf":       {"always": True,  "when_to_use": "create pdf file document report export portable"},
+    "create_xlsx":      {"always": True,  "when_to_use": "create excel spreadsheet xlsx table structured data rows columns"},
+    "create_csv":       {"always": True,  "when_to_use": "create csv file table rows columns data export comma separated"},
     "csv_to_excel":     {"always": False, "when_to_use": "convert csv to excel xlsx spreadsheet export"},
     "analyse_data":     {"always": False, "when_to_use": "analyze analyse statistics csv excel spreadsheet dataframe numeric columns rows describe"},
     "create_chart":     {"always": False, "when_to_use": "chart graph plot visualization diagram bar line scatter pie histogram"},
@@ -595,6 +651,7 @@ TOOL_MAP = {
     "add_appointment":  add_appointment,
     "list_appointments": list_appointments,
     "create_docx":      create_docx,
+    "create_pdf":       create_pdf,
     "create_xlsx":      create_xlsx,
     "create_csv":       create_csv,
     "csv_to_excel":     csv_to_excel,
@@ -613,7 +670,7 @@ TOOLS = [
     }},
     {"type": "function", "function": {
         "name": "read_file",
-        "description": "Reads the content of a file. Supports plain text, .docx and .xlsx/.xls.",
+        "description": "Reads the content of a file. Supports plain text, .docx, .xlsx/.xls, and .pdf.",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string", "description": "Relative path to the file"}
         }, "required": ["path"]}
@@ -677,6 +734,14 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "path":    {"type": "string", "description": "Relative path to the .docx file"},
             "content": {"type": "string", "description": "Text content of the document (line breaks are treated as paragraphs)"}
+        }, "required": ["path", "content"]}
+    }},
+    {"type": "function", "function": {
+        "name": "create_pdf",
+        "description": "Creates a PDF file (.pdf) with the given text content. Always use this for .pdf files — never write_file.",
+        "parameters": {"type": "object", "properties": {
+            "path":    {"type": "string", "description": "Relative path ending in .pdf, e.g. 'report.pdf'"},
+            "content": {"type": "string", "description": "Full text content of the PDF. Write the complete text here — line breaks are preserved as paragraphs."}
         }, "required": ["path", "content"]}
     }},
     {"type": "function", "function": {
@@ -938,11 +1003,7 @@ def run_agent(user_message: str) -> dict:
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        f"http://{_local_ip()}:8000",
-    ],
+    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000"],
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
 )
@@ -962,7 +1023,17 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         )
         return response
 
-app.add_middleware(SecurityHeadersMiddleware)
+class LANGuardMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        client_ip = request.client.host if request.client else None
+        if client_ip is None:
+            return JSONResponse({"error": "cannot determine client IP"}, status_code=403)
+        if client_ip not in ("127.0.0.1", "::1") and not _lan_access:
+            return JSONResponse({"error": "LAN access is disabled."}, status_code=403)
+        return await call_next(request)
+
+app.add_middleware(LANGuardMiddleware)       # inner  — blocks LAN when disabled
+app.add_middleware(SecurityHeadersMiddleware)  # outer — adds security headers to ALL responses
 
 class MessageRequest(BaseModel):
     message: str = ""
@@ -1038,6 +1109,27 @@ async def reset():
 async def status():
     return {"model": MODEL, "root": str(ROOT)}
 
+@app.get("/models")
+async def list_models():
+    try:
+        result = ollama.list()
+        models = [m.model for m in result.models]
+        return {"models": models}
+    except Exception as e:
+        return {"models": [], "error": str(e)}
+
+class SetModelRequest(BaseModel):
+    model: str
+
+@app.post("/set-model")
+async def set_model(req: SetModelRequest):
+    global MODEL
+    model = req.model.strip()
+    if not model:
+        return JSONResponse({"error": "Model name required"}, status_code=400)
+    MODEL = model
+    return {"ok": True, "model": MODEL}
+
 @app.get("/config")
 async def config():
     return {
@@ -1070,6 +1162,19 @@ async def set_root(req: SetRootRequest):
     ROOT = new_path
     history = []
     return {"ok": True, "root": str(ROOT)}
+
+@app.get("/pick-folder")
+async def pick_folder():
+    """Open a native folder dialog (pywebview desktop only). Returns null in browser mode."""
+    try:
+        import webview
+        if webview.windows:
+            result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
+            if result and len(result) > 0:
+                return {"path": result[0]}
+    except Exception:
+        pass
+    return {"path": None}
 
 @app.get("/file")
 async def serve_file(path: str):
@@ -1115,8 +1220,28 @@ async def qrcode_endpoint():
     buf = io.BytesIO()
     _qr.make(url).save(buf, format="PNG")
     b64 = base64.b64encode(buf.getvalue()).decode()
-    reachable = HOST == "0.0.0.0"
-    return {"url": url, "qr": b64, "reachable": reachable}
+    return {"url": url, "qr": b64, "lan_access": _lan_access}
+
+_TOGGLE_LAN_ALLOWED_ORIGINS = {"http://localhost:8000", "http://127.0.0.1:8000"}
+
+class LanToggleRequest(BaseModel):
+    enable: bool
+
+@app.post("/toggle-lan")
+async def toggle_lan(req: LanToggleRequest, request: Request):
+    # VULN-003: only loopback may change this setting
+    client_ip = request.client.host if request.client else ""
+    if client_ip not in ("127.0.0.1", "::1"):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    # VULN-001: CSRF guard — browser always sends Origin on cross-site POSTs
+    origin = request.headers.get("origin", "")
+    if origin and origin not in _TOGGLE_LAN_ALLOWED_ORIGINS:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    global _lan_access
+    with _lan_access_lock:
+        _cfg_set("lan_access", "1" if req.enable else "0")  # DB first
+        _lan_access = req.enable                             # then in-memory
+    return {"lan_access": _lan_access}
 
 @app.get("/notifications")
 async def notifications():
@@ -1656,6 +1781,24 @@ HTML_PAGE = """<!DOCTYPE html>
     font-family: var(--mono); font-size: 12px; color: var(--accent);
     text-align: center; word-break: break-all;
   }
+  .lan-toggle-row {
+    display: flex; align-items: center; justify-content: space-between;
+    margin: 0.8rem 0; font-size: 13px; color: var(--text);
+  }
+  .toggle-switch { position: relative; display: inline-block; width: 48px; height: 26px; }
+  .toggle-switch input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute; cursor: pointer;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: var(--border2); border-radius: 26px; transition: .25s;
+  }
+  .slider:before {
+    position: absolute; content: "";
+    height: 20px; width: 20px; left: 3px; bottom: 3px;
+    background: var(--muted); border-radius: 50%; transition: .25s;
+  }
+  .toggle-switch input:checked + .slider { background: var(--accent); }
+  .toggle-switch input:checked + .slider:before { background: var(--bg); transform: translateX(22px); }
 
   /* ── Toast notifications ── */
   #toast-container {
@@ -1957,6 +2100,18 @@ HTML_PAGE = """<!DOCTYPE html>
     transition: color 0.15s;
   }
   #root-path:hover { color: var(--accent); }
+  #model-name:hover { color: var(--accent); }
+  #model-select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border2);
+    border-radius: var(--radius);
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    margin-top: 6px;
+  }
 
   /* ── QR reachability warning ── */
   .qr-warning {
@@ -1977,7 +2132,7 @@ HTML_PAGE = """<!DOCTYPE html>
     <span class="logo">⬡ <span id="agent-label">Reiseki</span></span>
     <div class="divider-v"></div>
     <div class="meta" id="meta">
-      <span><span class="dot"></span><span id="model-name">–</span></span>
+      <span><span class="dot"></span><span id="model-name" onclick="openModelModal()" title="Change model" style="cursor:pointer">–</span></span>
       <span>📁 <span id="root-path" onclick="openDirModal()" title="Change directory">–</span></span>
     </div>
   </div>
@@ -2063,19 +2218,46 @@ HTML_PAGE = """<!DOCTYPE html>
   </div>
 </div>
 
+<!-- ── Model Selector Modal ── -->
+<div class="modal-overlay" id="model-modal">
+  <div class="modal">
+    <h2>⚙ Change Model</h2>
+    <p>Select an Ollama model that is already downloaded on this machine.</p>
+    <label>MODEL
+      <select id="model-select"></select>
+    </label>
+    <div id="model-error" style="color:var(--err);font-size:12px;display:none"></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal('model-modal')">Cancel</button>
+      <button class="btn-primary" onclick="saveModel()">Switch</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── QR Code Modal ── -->
 <div class="modal-overlay" id="qr-modal">
   <div class="modal">
-    <h2 data-i18n="qr_title">📱 Open on home network</h2>
-    <p data-i18n="qr_desc">Scan the QR code with your smartphone — both devices must be on the same Wi-Fi.</p>
-    <div id="qr-warning" class="qr-warning" style="display:none" data-i18n-html="qr_warning">
-      ⚠️ The server is only running on <b>127.0.0.1</b> — smartphone cannot reach it.<br>
-      Start with <code>AGENT_HOST=0.0.0.0 python agent.py</code> for network access.
+    <h2>📱 Open on home network</h2>
+    <p>Both devices must be on the same Wi-Fi.</p>
+    <div class="lan-toggle-row">
+      <span>Allow smartphone access</span>
+      <label class="toggle-switch">
+        <input type="checkbox" id="lan-toggle" onchange="toggleLan(this)">
+        <span class="slider"></span>
+      </label>
     </div>
-    <img class="qr-img" id="qr-img" src="" alt="QR Code">
-    <div class="qr-url" id="qr-url"></div>
+    <div id="qr-firewall-hint" class="qr-warning" style="display:none">
+      ⚠️ If your smartphone still can't connect: open Windows Firewall and allow port 8000 for private networks.
+    </div>
+    <div id="qr-content" style="display:none">
+      <img class="qr-img" id="qr-img" src="" alt="QR Code">
+      <div class="qr-url" id="qr-url"></div>
+    </div>
+    <div id="qr-off-hint" class="qr-warning">
+      Enable the toggle above to allow your smartphone to connect.
+    </div>
     <div class="modal-actions">
-      <button class="btn-secondary" onclick="closeModal('qr-modal')" data-i18n="btn_close">Close</button>
+      <button class="btn-secondary" onclick="closeModal('qr-modal')">Close</button>
     </div>
   </div>
 </div>
@@ -2204,10 +2386,6 @@ HTML_PAGE = """<!DOCTYPE html>
       label_dir:       'DIRECTORY',
       dir_placeholder: '/home/user/my-project',
       btn_switch:      'Switch',
-      // QR modal
-      qr_title: '📱 Open on home network',
-      qr_desc:  'Scan the QR code with your smartphone \\u2014 both devices must be on the same Wi-Fi.',
-      qr_warning: '\\u26a0\\ufe0f The server is only running on <b>127.0.0.1</b> \\u2014 smartphone cannot reach it.<br>Start with <code>AGENT_HOST=0.0.0.0 python agent.py</code> for network access.',
       // Setup modal
       setup_title:    '\\u2699 Configure agent',
       setup_desc:     'Give your agent a name and describe your goal. This info is saved permanently.',
@@ -2279,9 +2457,6 @@ HTML_PAGE = """<!DOCTYPE html>
       label_dir:       'VERZEICHNIS',
       dir_placeholder: '/home/user/mein-projekt',
       btn_switch:      'Wechseln',
-      qr_title: '📱 Im Heimnetz \\u00f6ffnen',
-      qr_desc:  'Scanne den QR-Code mit deinem Smartphone \\u2014 beide Ger\\u00e4te m\\u00fcssen im selben WLAN sein.',
-      qr_warning: '\\u26a0\\ufe0f Der Server l\\u00e4uft nur auf <b>127.0.0.1</b> \\u2014 das Smartphone kann ihn nicht erreichen.<br>Starte mit <code>AGENT_HOST=0.0.0.0 python agent.py</code> f\\u00fcr Netzwerkzugriff.',
       setup_title:    '\\u2699 Agent einrichten',
       setup_desc:     'Gib deinem Agenten einen Namen und beschreibe dein Ziel. Diese Infos werden dauerhaft gespeichert.',
       label_agent_name: 'AGENT-NAME',
@@ -2385,12 +2560,92 @@ HTML_PAGE = """<!DOCTYPE html>
     const d = await fetch('/qrcode').then(r => r.json());
     document.getElementById('qr-img').src = 'data:image/png;base64,' + d.qr;
     document.getElementById('qr-url').textContent = d.url;
-    document.getElementById('qr-warning').style.display = d.reachable ? 'none' : 'block';
+    document.getElementById('lan-toggle').checked = d.lan_access;
+    _applyLanState(d.lan_access);
     document.getElementById('qr-modal').classList.add('open');
   }
 
+  function _applyLanState(enabled) {
+    document.getElementById('qr-content').style.display      = enabled ? 'block' : 'none';
+    document.getElementById('qr-off-hint').style.display     = enabled ? 'none'  : 'block';
+    document.getElementById('qr-firewall-hint').style.display = enabled ? 'block' : 'none';
+  }
+
+  async function toggleLan(checkbox) {
+    checkbox.disabled = true;
+    try {
+      const res = await fetch('/toggle-lan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enable: checkbox.checked})
+      }).then(r => r.json());
+      checkbox.checked = res.lan_access;
+      _applyLanState(res.lan_access);
+    } finally {
+      checkbox.disabled = false;
+    }
+  }
+
+  // ── Model Modal ───────────────────────────────────────────────────────────
+  async function openModelModal() {
+    const sel = document.getElementById('model-select');
+    sel.innerHTML = '<option disabled>Loading...</option>';
+    document.getElementById('model-error').style.display = 'none';
+    document.getElementById('model-modal').classList.add('open');
+    const data = await fetch('/models').then(r => r.json());
+    const current = document.getElementById('model-name').textContent;
+    sel.innerHTML = '';
+    if (!data.models || data.models.length === 0) {
+      sel.innerHTML = '<option disabled>No models found — pull one with: ollama pull &lt;model&gt;</option>';
+      return;
+    }
+    data.models.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m;
+      if (m === current) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  }
+
+  async function saveModel() {
+    const model = document.getElementById('model-select').value;
+    const errEl = document.getElementById('model-error');
+    const res = await fetch('/set-model', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ model }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      errEl.textContent = data.error;
+      errEl.style.display = 'block';
+      return;
+    }
+    document.getElementById('model-name').textContent = data.model;
+    closeModal('model-modal');
+  }
+
   // ── Directory Modal ───────────────────────────────────────────────────────
-  function openDirModal() {
+  async function openDirModal() {
+    // In desktop (pywebview) mode: open native folder picker
+    const picked = await fetch('/pick-folder').then(r => r.json());
+    if (picked.path) {
+      const res = await fetch('/set-root', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ path: picked.path }),
+      });
+      const data = await res.json();
+      if (!data.error) {
+        document.getElementById('root-path').textContent = data.root;
+        chat.innerHTML = '';
+        chat.appendChild(empty);
+        empty.style.display = 'flex';
+        return;
+      }
+    }
+    // Browser fallback: show text input modal
     const cur = document.getElementById('root-path').textContent;
     document.getElementById('dir-input').value = cur === '–' ? '' : cur;
     document.getElementById('dir-error').style.display = 'none';
@@ -2952,11 +3207,9 @@ HTML_PAGE = """<!DOCTYPE html>
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    host = os.environ.get("AGENT_HOST", "127.0.0.1")
-    print(f"🤖  Modell  : {MODEL}")
+    print(f"🤖  Model   : {MODEL}")
     print(f"📁  Root    : {ROOT}")
-    print(f"🌐  URL     : http://{host}:8000")
-    if host == "0.0.0.0":
-        print(f"⚠️  LAN-Zugriff aktiv — keine Authentifizierung! LAN-IP: {_local_ip()}")
+    print(f"🌐  URL     : http://127.0.0.1:8000")
+    print(f"📱  LAN IP  : {_local_ip()} (enable smartphone access in the QR modal)")
     print()
-    uvicorn.run(app, host=host, port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
