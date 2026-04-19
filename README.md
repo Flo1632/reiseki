@@ -16,9 +16,9 @@ Accessible as a web app in your browser or as a native desktop window (via pyweb
 - **Web search** — DuckDuckGo queries with explicit user confirmation before sending
 - **Persistent memory** — the agent remembers facts across conversations (SQLite)
 - **Appointments** — schedule reminders with toast notifications in the UI
-- **Document creation** — generate `.docx`, `.xlsx`, `.csv` files on request
+- **Document creation** — generate `.docx`, `.xlsx`, `.csv`, `.pdf` files on request
 - **Data analysis & charts** — analyse tabular data and render matplotlib charts
-- **QR code access** — scan to open the UI from your phone on the same Wi-Fi **NOT YET WORKING, will be targeted in next release**
+- **QR code access** — scan to open the UI from your phone on the same Wi-Fi **now enabled via toggle v0.1.3**
 - **Desktop launcher** — opens in a native window via `pywebview`
 - **Streaming responses** — token-by-token output via Server-Sent Events
 
