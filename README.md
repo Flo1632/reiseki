@@ -176,7 +176,7 @@ AGENT_ROOT=~/reiseki-workspace AGENT_MODEL=gemma4:e2b python agent/agent.py
 - **File operations at your own risk** — The agent can read, write, and overwrite files within `AGENT_ROOT`. **Make sure you have backups of important data.**
 - **Not professional advice** — Generated documents, analyses, and scheduling suggestions do not replace professional legal, financial, or medical advice.
 - **Model-dependent quality** — Output quality depends entirely on the Ollama model you choose. Reiseki itself is not an AI model.
-- **Built with AI** — This project was built entirely with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) by Anthropic.
+- **Built with AI** — This project was built entirely with the tool [Claude Code](https://docs.anthropic.com/en/docs/claude-code) by Anthropic.
 
 ---
 
