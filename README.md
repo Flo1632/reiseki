@@ -36,9 +36,12 @@ Reiseki runs inference locally and does not require a cloud LLM API. It provides
 - DuckDuckGo search after explicit confirmation
 - Optional LAN access if enabled
 
+> [!CAUTION]
+> Reiseki restricts file access to `AGENT_ROOT`, but it is not a sandbox or security boundary. For sensitive use cases, run it in a dedicated workspace, VM, or container.
 > [!IMPORTANT]
 > `AGENT_ROOT` defines the workspace the agent may access.  
 > By default, `AGENT_ROOT=.` (the current working directory). For safer use, run Reiseki inside a dedicated workspace or set `AGENT_ROOT` explicitly.
+
 
 ## Requirements
 
@@ -160,8 +163,17 @@ AGENT_ROOT=~/reiseki-workspace AGENT_MODEL=gemma4:e2b python agent/agent.py
 ---
 
 ## Disclaimer
+> [!CAUTION]
 
-Reiseki uses a local large language model (LLM) via Ollama to generate responses, files, and analyses. Please keep the following in mind:
+> Reiseki is provided **"as is"**, without warranty of any kind, express or implied.
+
+> Use it at your own risk. The authors are not liable for any claim, damages, or other liability arising from the use of the software, including but not limited to data loss, incorrect outputs, failed  automations, or system misconfiguration.
+
+> Reiseki can read and modify files inside `AGENT_ROOT`. Always review outputs and keep backups of important data.
+
+> Reiseki is not a security boundary or sandbox. If you need stronger isolation, run it inside a dedicated workspace, VM, or container.
+
+> Reiseki uses a local large language model (LLM) via Ollama to generate responses, files, and analyses. Additionally, please keep the following in mind:
 
 - **No guarantee of correctness** — LLM outputs can be inaccurate, incomplete, or entirely fabricated ("hallucinations"). **Always review generated content before relying on it.**
 - **File operations at your own risk** — The agent can read, write, and overwrite files within `AGENT_ROOT`. **Make sure you have backups of important data.**
