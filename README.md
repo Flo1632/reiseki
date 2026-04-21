@@ -1,4 +1,4 @@
-# Reiseki — Local-first AI assistant for files, reminders, and document generation, powered by Ollama.
+# Reiseki — Local-first AI assistant for files, reminders, and document generation
 
 Reiseki runs inference locally and does not require a cloud LLM API. It provides a FastAPI-based chat UI, optional desktop packaging via pywebview, local SQLite memory, and tool access for files, reminders, documents, and lightweight data analysis.
 
