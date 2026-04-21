@@ -1,8 +1,6 @@
-# Reiseki — Local AI Assistant
+# Reiseki — Local-first AI assistant for files, reminders, and document generation, powered by Ollama.
 
-Privacy-first local AI assistant for files, appointments, and documents — powered by Ollama. Runs entirely on your machine — no cloud API, no personal data leaves the device.
-
-Accessible as a web app in your browser or as a native desktop window (via pywebview). Also reachable from your phone via QR code on the same local network.
+Reiseki runs inference locally and does not require a cloud LLM API. It provides a FastAPI-based chat UI, optional desktop packaging via pywebview, local SQLite memory, and tool access for files, reminders, documents, and lightweight data analysis.
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-green)
@@ -12,40 +10,57 @@ Accessible as a web app in your browser or as a native desktop window (via pyweb
 
 ## Features
 
-- **Chat with your file system** — list, read, write, and create files through natural language
-- **Web search** — DuckDuckGo queries with explicit user confirmation before sending
-- **Persistent memory** — the agent remembers facts across conversations (SQLite)
-- **Appointments** — schedule reminders with toast notifications in the UI
-- **Document creation** — generate `.docx`, `.xlsx`, `.csv`, `.pdf` files on request
-- **Data analysis & charts** — analyse tabular data and render matplotlib charts
-- **QR code access** — scan to open the UI from your phone on the same Wi-Fi **now enabled via toggle v0.1.3**
-- **Desktop launcher** — opens in a native window via `pywebview`
-- **Streaming responses** — token-by-token output via Server-Sent Events
+- Local LLM inference via Ollama
+- File-system tools: list, read, write, create directories
+- Local memory persisted in SQLite
+- Reminders / appointments in the UI
+- Document export: `.docx`, `.xlsx`, `.csv`, `.pdf`
+- Basic data analysis and chart generation
+- Streaming responses via SSE
+- Optional DuckDuckGo web search with explicit confirmation
+- Optional LAN access for phone/browser on the same network
 
 ---
+
+## Privacy / Security model
+
+### Local by default
+- Ollama inference runs locally
+- Agent server binds to `127.0.0.1` by default
+- Memory is stored locally in SQLite
+- File access is restricted to `AGENT_ROOT`
+
+### Network use
+- Installing dependencies
+- Pulling Ollama models
+- DuckDuckGo search after explicit confirmation
+- Optional LAN access if enabled
+
+> [!IMPORTANT]
+> `AGENT_ROOT` defines the workspace the agent may access.  
+> By default, `AGENT_ROOT=.` (the current working directory). For safer use, run Reiseki inside a dedicated workspace or set `AGENT_ROOT` explicitly.
 
 ## Requirements
 
 - Python 3.10+
-- [Ollama](https://ollama.com/download) installed and running locally
+- [Ollama](https://ollama.com/download)
 
----
-
-## Quick Start
-
-### 1. Install Ollama and pull a model
+Pull a model first:
 
 ```bash
-# Install Ollama from https://ollama.com/download, then:
-ollama pull qwen2.5-coder:7b
+ollama pull gemma4:e2b
 ```
 
-### 2.1 Download the ReisekiSetup.exe for Windows / Reiseki.dmg for Mac
-Follow the instructions of the installer
+## Install
 
-OR
+### Option 1: Release installer
 
-### 2.2 Clone and install dependencies
+Download the latest release from the [Releases](../../releases) page:
+
+- `ReisekiSetup.exe` — Windows
+- `Reiseki.dmg` — macOS
+
+### Option 2: From source
 
 ```bash
 git clone https://github.com/Flo1632/reiseki.git
@@ -53,88 +68,94 @@ cd reiseki
 pip install -r requirements.txt
 ```
 
-### 3. Run
+### Option 3: Script installer
+
+For systems with Python and Ollama already installed:
+
+- `install.sh` — macOS / Linux
+- `install.bat` — Windows
+
+These installer scripts create a virtual environment, install dependencies, pull the default model, and generate a launch script.
+
+## Run
+
+### Browser
 
 ```bash
-# Browser (default)
 python agent/agent.py
+```
 
-# Native desktop window
+Open:
+
+```text
+http://localhost:8000
+```
+
+### Desktop window
+
+```bash
 python agent/launcher.py
 ```
 
-Open [http://localhost:8000](http://localhost:8000) in your browser.
-
----
-
-## Script Installers (macOS / Windows)
-
-For non-developer users who have Python and Ollama already installed:
-
-| Platform | Script |
-|----------|--------|
-| macOS / Linux | `install.sh` |
-| Windows | `install.bat` |
-
-These scripts create a virtual environment, install all Python dependencies, pull the default model, and generate a `launch.sh` / `launch.bat` shortcut to start the app.
-
-> **Packaged releases (.exe / .dmg)** — standalone installers that bundle Python are planned and will be built automatically via GitHub Actions. Check the [Releases](../../releases) page once available.
-
----
-
 ## Configuration
 
-| Environment Variable | Default | Description |
+| Variable | Default | Description |
 |---|---|---|
-| `AGENT_MODEL` | `qwen2.5-coder:7b` | Ollama model to use |
-| `AGENT_ROOT` | `.` (current dir) | Root directory the agent may access |
-| `AGENT_HOST` | `127.0.0.1` | Host to bind the server to |
+| `AGENT_MODEL` | `gemma4:e2b` | Ollama model |
+| `AGENT_ROOT` | `.` | Accessible workspace root |
+| `AGENT_HOST` | `127.0.0.1` | Bind host |
+
+Example:
 
 ```bash
-AGENT_MODEL=qwen2.5-coder:14b AGENT_ROOT=~/documents python agent/agent.py
+AGENT_ROOT=~/reiseki-workspace AGENT_MODEL=gemma4:e2b python agent/agent.py
 ```
 
----
+## Example prompts
 
-## Security
+- `Summarize all Markdown files in this folder.`
+- `Create a todo.xlsx with task, deadline, and status columns.`
+- `Read notes.pdf and extract the main points.`
+- `Search the web for the latest FastAPI release notes.`
+- `Remind me tomorrow at 09:00 to send the invoice.`
 
-- **Path traversal guard** — all file operations are restricted to `AGENT_ROOT`
-- **Web search confirmation** — outbound search requires explicit in-UI approval
-- **Local only** — Ollama and the agent server run on `localhost` by default
-
----
-
-## Available Tools
+## Tools
 
 | Tool | Description |
 |---|---|
 | `list_directory` | List files and folders |
 | `read_file` | Read file content |
-| `write_file` | Create or overwrite a file |
-| `create_directory` | Create a new folder |
+| `write_file` | Write a file |
+| `create_directory` | Create a directory |
 | `web_search` | Search via DuckDuckGo |
-| `save_memory` | Persist a memory to SQLite |
-| `list_memories` | Recall stored memories |
-| `add_appointment` | Schedule an appointment |
-| `list_appointments` | List upcoming appointments |
-| `create_docx` | Generate a Word document |
-| `create_xlsx` | Generate an Excel spreadsheet |
+| `save_memory` | Store memory in SQLite |
+| `list_memories` | List saved memories |
+| `add_appointment` | Create a reminder |
+| `list_appointments` | List reminders |
+| `create_docx` | Generate a Word file |
+| `create_xlsx` | Generate an Excel file |
 | `create_csv` | Generate a CSV file |
-| `analyse_data` | Analyse tabular data with pandas |
+| `create_pdf` | Generate a PDF file |
+| `analyse_data` | Analyze tabular data |
 | `create_chart` | Render a matplotlib chart |
-
----
 
 ## Stack
 
-| Layer | Technology |
-|---|---|
-| LLM backend | Ollama |
-| Web framework | FastAPI + Uvicorn |
-| Data validation | Pydantic v2 |
-| Persistent memory | SQLite |
-| Desktop wrapper | pywebview |
-| Frontend | Vanilla HTML/CSS/JS |
+- **LLM backend:** Ollama
+- **API:** FastAPI + Uvicorn
+- **Validation:** Pydantic v2
+- **Memory:** SQLite
+- **Desktop wrapper:** pywebview
+- **Frontend:** HTML / CSS / JavaScript
+
+## Notes
+
+- LAN access is **off by default**
+- v0.1.3 adds:
+  - LAN toggle in the UI
+  - PDF read support
+  - PDF creation support
+  - model switching in the UI without restart
 
 ---
 
@@ -142,8 +163,8 @@ AGENT_MODEL=qwen2.5-coder:14b AGENT_ROOT=~/documents python agent/agent.py
 
 Reiseki uses a local large language model (LLM) via Ollama to generate responses, files, and analyses. Please keep the following in mind:
 
-- **No guarantee of correctness** — LLM outputs can be inaccurate, incomplete, or entirely fabricated ("hallucinations"). Always review generated content before relying on it.
-- **File operations at your own risk** — The agent can read, write, and overwrite files within `AGENT_ROOT`. Make sure you have backups of important data.
+- **No guarantee of correctness** — LLM outputs can be inaccurate, incomplete, or entirely fabricated ("hallucinations"). **Always review generated content before relying on it.**
+- **File operations at your own risk** — The agent can read, write, and overwrite files within `AGENT_ROOT`. **Make sure you have backups of important data.**
 - **Not professional advice** — Generated documents, analyses, and scheduling suggestions do not replace professional legal, financial, or medical advice.
 - **Model-dependent quality** — Output quality depends entirely on the Ollama model you choose. Reiseki itself is not an AI model.
 - **Built with AI** — This project was built entirely with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) by Anthropic.
