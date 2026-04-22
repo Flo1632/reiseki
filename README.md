@@ -12,13 +12,16 @@ Reiseki runs inference locally and does not require a cloud LLM API. It provides
 
 - Local LLM inference via Ollama
 - File-system tools: list, read, write, create directories
-- Local memory persisted in SQLite
-- Reminders / appointments in the UI
+- PDF support: read and extract text from PDFs, generate PDF documents
+- Local memory persisted in SQLite — you control what the agent remembers
+- Conversation history across sessions — the agent recalls previous conversations
+- Reminders / appointments with toast notifications in the UI
 - Document export: `.docx`, `.xlsx`, `.csv`, `.pdf`
 - Basic data analysis and chart generation
 - Streaming responses via SSE
-- Optional DuckDuckGo web search with explicit confirmation
-- Optional LAN access for phone/browser on the same network
+- Smartphone access via QR code toggle in the UI
+- Desktop launcher via pywebview
+- Model switcher — change the Ollama model directly in the UI without restarting
 
 ---
 
@@ -26,23 +29,25 @@ Reiseki runs inference locally and does not require a cloud LLM API. It provides
 
 ### Local by default
 - Ollama inference runs locally
-- Agent server binds to `127.0.0.1` by default
 - Memory is stored locally in SQLite
 - File access is restricted to `AGENT_ROOT`
+- Existing files cannot be overwritten or deleted by the agent
 
 ### Network use
 - Installing dependencies
 - Pulling Ollama models
-- DuckDuckGo search after explicit confirmation
 - Optional LAN access if enabled
 
 > [!CAUTION]
 > Reiseki restricts file access to `AGENT_ROOT`, but it is not a sandbox or security boundary. For sensitive use cases, run it in a dedicated workspace, VM, or container.
 
+> **LAN access:** When the smartphone toggle is enabled, any device on the same network can reach the agent without authentication. Only enable this on a trusted private network (e.g. your home Wi-Fi). Never use it on public or shared networks such as hotels, cafés, or offices.
+
 > [!IMPORTANT]
 > `AGENT_ROOT` defines the workspace the agent may access.  
-> By default, `AGENT_ROOT=.` (the current working directory). For safer use, run Reiseki inside a dedicated workspace or set `AGENT_ROOT` explicitly.
+> For safer use, run Reiseki inside a dedicated workspace or set `AGENT_ROOT` explicitly.
 
+---
 
 ## Requirements
 
@@ -59,10 +64,14 @@ ollama pull gemma4:e2b
 
 ### Option 1: Release installer
 
+> Ollama must be installed before running the installer.
+
 Download the latest release from the [Releases](../../releases) page:
 
 - `ReisekiSetup.exe` — Windows
 - `Reiseki.dmg` — macOS
+
+---
 
 ### Option 2: From source
 
@@ -71,6 +80,8 @@ git clone https://github.com/Flo1632/reiseki.git
 cd reiseki
 pip install -r requirements.txt
 ```
+
+---
 
 ### Option 3: Script installer
 
@@ -81,6 +92,8 @@ For systems with Python and Ollama already installed:
 
 These installer scripts create a virtual environment, install dependencies, pull the default model, and generate a launch script.
 
+---
+
 ## Run
 
 ### Browser
@@ -89,11 +102,7 @@ These installer scripts create a virtual environment, install dependencies, pull
 python agent/agent.py
 ```
 
-Open:
-
-```text
-http://localhost:8000
-```
+# then open http://localhost:8000
 
 ### Desktop window
 
@@ -101,19 +110,19 @@ http://localhost:8000
 python agent/launcher.py
 ```
 
+---
+
 ## Configuration
 
 | Variable | Default | Description |
 |---|---|---|
 | `AGENT_MODEL` | `gemma4:e2b` | Ollama model |
-| `AGENT_ROOT` | `.` | Accessible workspace root |
-| `AGENT_HOST` | `127.0.0.1` | Bind host |
-
-Example:
+| `AGENT_ROOT` | `~/Reiseki` | Accessible workspace root |
 
 ```bash
-AGENT_ROOT=~/reiseki-workspace AGENT_MODEL=gemma4:e2b python agent/agent.py
+AGENT_MODEL=gemma4:e2b AGENT_ROOT=~/documents python agent/agent.py
 ```
+---
 
 ## Example prompts
 
@@ -123,34 +132,39 @@ AGENT_ROOT=~/reiseki-workspace AGENT_MODEL=gemma4:e2b python agent/agent.py
 - `Search the web for the latest FastAPI release notes.`
 - `Remind me tomorrow at 09:00 to send the invoice.`
 
+---
+
 ## Tools
 
 | Tool | Description |
 |---|---|
 | `list_directory` | List files and folders |
-| `read_file` | Read file content |
-| `write_file` | Write a file |
+| `read_file` | Read file content (text, PDF) |
+| `write_file` | Create a new file |
 | `create_directory` | Create a directory |
-| `web_search` | Search via DuckDuckGo |
 | `save_memory` | Store memory in SQLite |
 | `list_memories` | List saved memories |
 | `add_appointment` | Create a reminder |
 | `list_appointments` | List reminders |
 | `create_docx` | Generate a Word file |
+| `create_pdf` | Generate a PDF file |
 | `create_xlsx` | Generate an Excel file |
 | `create_csv` | Generate a CSV file |
-| `create_pdf` | Generate a PDF file |
 | `analyse_data` | Analyze tabular data |
 | `create_chart` | Render a matplotlib chart |
 
+---
+
 ## Stack
 
-- **LLM backend:** Ollama
-- **API:** FastAPI + Uvicorn
-- **Validation:** Pydantic v2
-- **Memory:** SQLite
-- **Desktop wrapper:** pywebview
-- **Frontend:** HTML / CSS / JavaScript
+| Layer | Technology |
+|---|---|
+| LLM backend | Ollama (Gemma 4) |
+| API | FastAPI + Uvicorn |
+| Validation | Pydantic v2 |
+| Memory | SQLite |
+| Desktop wrapper | pywebview |
+| Frontend | HTML / CSS / JavaScript |
 
 ## Notes
 
@@ -182,4 +196,4 @@ AGENT_ROOT=~/reiseki-workspace AGENT_MODEL=gemma4:e2b python agent/agent.py
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE)
