@@ -18,6 +18,7 @@ import queue as _queue
 import re
 import socket
 import sqlite3
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,7 +33,57 @@ import ollama
 
 # ── Config ───────────────────────────────────────────────────────────────────
 MODEL                  = os.environ.get("AGENT_MODEL", "gemma4:e2b")
-ORIGINAL_ROOT          = Path(os.environ.get("AGENT_ROOT", ".")).resolve()
+
+def _resolve_root() -> Path:
+    """Determine workspace root: env var → installer config file (frozen only) → ~/Reiseki."""
+    env = os.environ.get("AGENT_ROOT")
+    if env:
+        return Path(env).resolve()
+
+    # workspace.txt is only written by the PyInstaller installer — skip for plain `python agent.py`
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).parent
+        cfg = exe_dir / "workspace.txt"
+        if cfg.exists():
+            try:
+                # Try UTF-8 BOM first (written by installer), fall back to system ANSI codepage
+                raw = None
+                for enc in ("utf-8-sig", None):
+                    try:
+                        raw = cfg.read_text(encoding=enc).strip()
+                        break
+                    except (UnicodeDecodeError, TypeError):
+                        continue
+                if not raw:
+                    raise ValueError("workspace.txt is empty or unreadable")
+                if len(raw) > 500:
+                    raise ValueError("workspace.txt path too long (max 500 chars)")
+                p = Path(raw).resolve()
+
+                # Reject system/sensitive directories
+                _sys_vars = ("SystemRoot", "windir", "ProgramFiles",
+                             "ProgramFiles(x86)", "ProgramData")
+                unsafe = [Path(os.environ[v]).resolve()
+                          for v in _sys_vars if v in os.environ]
+                for u in unsafe:
+                    if p == u or u in p.parents:
+                        raise ValueError(f"Workspace path is inside a system directory: {p}")
+
+                # Reject paths that overlap with the install directory
+                if p == exe_dir or exe_dir in p.parents or p in exe_dir.parents:
+                    raise ValueError(f"Workspace path must not overlap with the install directory: {p}")
+
+                p.mkdir(parents=True, exist_ok=True)
+                return p
+            except Exception as exc:
+                logger.warning("workspace.txt rejected (%s) — falling back to ~/Reiseki", exc)
+
+    # Safe fallback: always a predictable, user-owned directory
+    fallback = Path.home() / "Reiseki"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+ORIGINAL_ROOT          = _resolve_root()
 ROOT                   = ORIGINAL_ROOT
 _lan_access: bool      = False   # toggled at runtime; persisted to SQLite
 _lan_access_lock       = threading.Lock()
@@ -41,12 +92,6 @@ CONTEXT_COMPRESS_AFTER = 4   # compress history after this many tool calls per t
 HISTORY_MAX_MESSAGES   = 20  # max messages kept across turns before compression
 MEMORY_TOP_K           = 8   # relevant memories injected per request
 TOOLS_TOP_K            = 4   # dynamic tools selected per request (+ always-on)
-SEARCH_CONFIRM_TIMEOUT = 30  # seconds to wait for user confirmation before auto-cancel
-
-# ── Web-search confirmation state (single-user) ───────────────────────────────
-_search_confirm_event    = threading.Event()
-_search_confirm_approved = False
-
 # ── Concurrency lock (single-user app — serialise requests to protect globals) ─
 _request_lock = asyncio.Lock()
 
@@ -113,12 +158,18 @@ def _warmup_model() -> None:
 threading.Thread(target=_warmup_model, daemon=True).start()
 
 def _log_message(role: str, content: str) -> None:
-    """Persist a single chat turn to the chat_log table."""
+    """Persist a single chat turn to the chat_log table (rolling cap: 2000 rows)."""
     with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "INSERT INTO chat_log (role, content) VALUES (?,?)",
             (role, content[:10000])
         )
+        conn.execute(
+            "DELETE FROM chat_log WHERE id NOT IN "
+            "(SELECT id FROM chat_log ORDER BY id DESC LIMIT 2000)"
+        )
+        conn.execute("COMMIT")
 
 def _cfg_get(key: str, default: str = "") -> str:
     with sqlite3.connect(DB_PATH) as conn:
@@ -166,7 +217,7 @@ def _build_system(query: str = "") -> str:
         f"Only use tools when strictly necessary. For simple questions or conversational replies, answer directly without calling any tool.\n"
         f"Use the minimum number of tool calls needed — do not chain tools unnecessarily.\n"
         f"IMPORTANT — Tool chaining rule: When creating a file or document (write_file, create_docx, create_xlsx), "
-        f"you MUST use the ACTUAL content returned by previous tool calls (e.g. web_search results, read_file content). "
+        f"you MUST use the ACTUAL content returned by previous tool calls (e.g. read_file content, list_directory results). "
         f"Never write placeholder text or invent content — copy the real tool result into the document.\n"
         f"Once you have enough information to answer and the tool calls have satisfied the requirement, stop calling tools and respond directly."
     )
@@ -187,6 +238,21 @@ def _build_system(query: str = "") -> str:
         mem_lines = "\n".join(f"[{r[1]}] ({r[2]}) {r[3]}" for r in mem_rows)
         base += f"\n\nRelevant memories — use these to personalise your responses:\n{mem_lines}"
     return base
+
+
+def _load_past_turns(limit: int = 10) -> list[dict]:
+    """Load recent chat_log turns as user/assistant message dicts for the messages array."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT role, content FROM chat_log "
+            "WHERE role IN ('user','assistant') ORDER BY id DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+    past = []
+    for role, content in reversed(rows):
+        truncated = content[:400] + (" ... [truncated]" if len(content) > 400 else "")
+        past.append({"role": role, "content": truncated})
+    return past
 
 # ── Safety helper ─────────────────────────────────────────────────────────────
 def _safe(path: str) -> Path | None:
@@ -248,7 +314,7 @@ def write_file(path: str, content: str) -> str:
     if t.suffix.lower() in (".docx", ".xlsx", ".xls"):
         return f"Error: Use create_docx or create_xlsx for .docx/.xlsx files — write_file only writes plain text."
     if t.exists():
-        return f"Error: File '{path}' already exists. Choose a different filename or ask the user whether to overwrite."
+        return f"Error: File '{path}' already exists. Files cannot be overwritten — choose a different filename."
     try:
         t.parent.mkdir(parents=True, exist_ok=True)
         t.write_text(content, encoding="utf-8")
@@ -268,46 +334,6 @@ def create_directory(path: str) -> str:
         logger.error("create_directory(%s): %s", path, e)
         return "Error: Could not create directory"
 
-# Domains blocked in web search results (malware, tracking, spam)
-_BLOCKED_DOMAINS = {
-    "malware.com", "phishing.com",          # placeholder examples
-    "doubleclick.net", "googleadservices.com",
-    "tracking.com", "clickbait.info",
-}
-
-def _is_safe_url(url: str) -> bool:
-    """Return True only for HTTPS URLs whose host is not in the blocklist."""
-    try:
-        from urllib.parse import urlparse
-        p = urlparse(url)
-        if p.scheme != "https":
-            return False
-        host = p.hostname or ""
-        # Strip leading 'www.'
-        host = host.removeprefix("www.")
-        return host not in _BLOCKED_DOMAINS
-    except Exception:
-        return False
-
-def web_search(query: str, max_results: int = 5) -> str:
-    """Search the web via DuckDuckGo. Only the query string is sent — no user data."""
-    # Cap query length to prevent data exfiltration via search queries
-    if len(query) > 200:
-        return "Error: Query too long (max. 200 characters)"
-    max_results = min(max(1, max_results), 10)
-    try:
-        from ddgs import DDGS
-        # safesearch="on" filters adult/harmful content at the DuckDuckGo level
-        with DDGS() as ddgs:
-            raw = list(ddgs.text(query, max_results=max_results * 2, safesearch="on"))
-        # Keep only HTTPS results not on the blocklist
-        results = [r for r in raw if _is_safe_url(r.get("href", ""))][:max_results]
-        if not results:
-            return "No safe results found."
-        lines = [f"**{r['title']}**\n{r['href']}\n{r['body']}" for r in results]
-        return "\n\n---\n\n".join(lines)
-    except Exception as e:
-        return f"Search error: {e}"
 
 def save_memory(content: str, category: str = "general", importance: float = 0.5) -> str:
     importance = max(0.0, min(1.0, float(importance)))
@@ -610,11 +636,10 @@ _TOOL_META: dict[str, dict] = {
     "read_file":        {"always": True,  "when_to_use": "read file content inspect document open look at text"},
     "write_file":       {"always": True,  "when_to_use": "create write save update file text content output"},
     "create_directory": {"always": False, "when_to_use": "create folder directory organize mkdir new folder"},
-    "web_search":       {"always": False, "when_to_use": "search internet web look up online information news current events"},
     "save_memory":      {"always": False, "when_to_use": "remember save memory fact preference goal important information"},
-    "list_memories":    {"always": False, "when_to_use": "recall memory remember what do you know history stored"},
-    "add_appointment":  {"always": False, "when_to_use": "schedule appointment meeting reminder event deadline calendar"},
-    "list_appointments":{"always": False, "when_to_use": "show appointments schedule calendar upcoming events deadlines"},
+    "list_memories":              {"always": False, "when_to_use": "recall memory remember what do you know history stored"},
+    "add_appointment":  {"always": True, "when_to_use": "schedule appointment meeting reminder event deadline calendar"},
+    "list_appointments":{"always": True, "when_to_use": "show appointments schedule calendar upcoming events deadlines"},
     "create_docx":      {"always": True,  "when_to_use": "create word document docx report letter write formatted"},
     "create_pdf":       {"always": True,  "when_to_use": "create pdf file document report export portable"},
     "create_xlsx":      {"always": True,  "when_to_use": "create excel spreadsheet xlsx table structured data rows columns"},
@@ -645,9 +670,8 @@ TOOL_MAP = {
     "read_file":        read_file,
     "write_file":       write_file,
     "create_directory": create_directory,
-    "web_search":       web_search,
     "save_memory":      save_memory,
-    "list_memories":    list_memories,
+    "list_memories":             list_memories,
     "add_appointment":  add_appointment,
     "list_appointments": list_appointments,
     "create_docx":      create_docx,
@@ -689,14 +713,6 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string", "description": "Relative path of the new directory"}
         }, "required": ["path"]}
-    }},
-    {"type": "function", "function": {
-        "name": "web_search",
-        "description": "Searches the internet via DuckDuckGo. Only the query is transmitted — no user data.",
-        "parameters": {"type": "object", "properties": {
-            "query":       {"type": "string",  "description": "Search query"},
-            "max_results": {"type": "integer", "description": "Maximum number of results (default: 5)"}
-        }, "required": ["query"]}
     }},
     {"type": "function", "function": {
         "name": "save_memory",
@@ -912,8 +928,11 @@ def run_agent_stream(user_message: str):
     history.append({"role": "user", "content": user_message})
     _log_message("user", user_message)
 
-    # Fresh system prompt with relevance-scored memories for this query
-    messages        = [{"role": "system", "content": _build_system(user_message)}] + history
+    # Past sessions (fetched once — not inside the loop) prepended as user/assistant messages
+    past_turns = _load_past_turns()
+
+    # Fresh system prompt + past turns + current session history
+    messages        = [{"role": "system", "content": _build_system(user_message)}] + past_turns + history
     tool_trace      = []
     tool_call_count = 0
 
@@ -951,21 +970,6 @@ def run_agent_stream(user_message: str):
 
             yield {"type": "tool_start", "tool": tc.function.name, "args": args}
 
-            # Web-search confirmation gate
-            if tc.function.name == "web_search":
-                global _search_confirm_event, _search_confirm_approved
-                _search_confirm_approved = False
-                _search_confirm_event.clear()
-                yield {"type": "confirm_search", "query": args.get("query", "")}
-                granted = _search_confirm_event.wait(timeout=SEARCH_CONFIRM_TIMEOUT)
-                if not granted or not _search_confirm_approved:
-                    result = "Websuche wurde vom Nutzer abgebrochen."
-                    tool_trace.append({"tool": tc.function.name, "args": args, "result": result})
-                    tool_entry = {"role": "tool", "content": result}
-                    messages.append(tool_entry)
-                    history.append(tool_entry)
-                    tool_call_count += 1
-                    continue
 
             try:
                 result = fn(**args) if fn else f"Unbekanntes Tool: {tc.function.name}"
@@ -1103,6 +1107,8 @@ async def reset():
     global history
     async with _request_lock:
         history = []
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("DELETE FROM chat_log")
     return {"ok": True}
 
 @app.get("/status")
@@ -1260,16 +1266,6 @@ async def notifications():
             )
     return {"notifications": [{"title": r[1], "description": r[2], "due_at": r[3]} for r in rows]}
 
-class SearchConfirmRequest(BaseModel):
-    approved: bool = False
-
-@app.post("/search-confirm")
-async def search_confirm(req: SearchConfirmRequest):
-    global _search_confirm_approved
-    _search_confirm_approved = req.approved
-    _search_confirm_event.set()
-    return {"ok": True}
-
 class MemoryUpdateRequest(BaseModel):
     content:    str   = ""
     category:   str   = "general"
@@ -1380,8 +1376,11 @@ async def get_chat_log(limit: int = 100):
 
 @app.delete("/chat-log")
 async def clear_chat_log():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("DELETE FROM chat_log")
+    global history
+    async with _request_lock:
+        history = []
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("DELETE FROM chat_log")
     return {"ok": True}
 
 @app.get("/", response_class=HTMLResponse)
@@ -2046,22 +2045,6 @@ HTML_PAGE = """<!DOCTYPE html>
   }
   .btn-save-mem:hover { color: var(--accent); border-color: var(--accent); }
 
-  /* ── Search confirmation modal ── */
-  .search-confirm-query {
-    font-family: var(--mono);
-    font-size: 13px;
-    background: var(--tool-bg);
-    border: 1px solid var(--border2);
-    border-radius: var(--radius);
-    padding: 10px 14px;
-    color: var(--text);
-    word-break: break-word;
-    line-height: 1.5;
-  }
-  .search-confirm-query::before {
-    content: '🔍  ';
-  }
-
   /* ── History modal entries ── */
   .history-entry {
     border: 1px solid var(--border);
@@ -2174,18 +2157,6 @@ HTML_PAGE = """<!DOCTYPE html>
   </div>
 </div>
 
-<!-- ── Search Confirmation Modal ── -->
-<div class="modal-overlay" id="search-confirm-modal">
-  <div class="modal">
-    <h2 data-i18n="search_title">🔍 Confirm web search</h2>
-    <p data-i18n="search_desc">The agent wants to send the following query to DuckDuckGo:</p>
-    <div class="search-confirm-query" id="search-confirm-query"></div>
-    <div class="modal-actions">
-      <button class="btn-secondary" onclick="respondSearch(false)" data-i18n="btn_cancel">Cancel</button>
-      <button class="btn-primary" onclick="respondSearch(true)" data-i18n="btn_search">Search</button>
-    </div>
-  </div>
-</div>
 
 <!-- ── History Modal ── -->
 <div class="modal-overlay" id="history-modal">
@@ -2288,7 +2259,7 @@ HTML_PAGE = """<!DOCTYPE html>
     <div class="empty-glyph">◈</div>
     <div class="empty-title" data-i18n="empty_title">LOCAL ASSISTENT</div>
     <div class="empty-sub">
-      <span data-i18n="empty_sub">Your personal assistant for files, web search, appointments and more.</span>
+      <span data-i18n="empty_sub">Your personal assistant for files, appointments, documents and more.</span>
       <div class="btn-guide">
         <span data-i18n="btn_guide_qr">📱 Smartphone access</span>
         <span data-i18n="btn_guide_memory">🧠 View &amp; edit memories</span>
@@ -2300,7 +2271,7 @@ HTML_PAGE = """<!DOCTYPE html>
       <div class="pill" data-i18n="pill_list" data-hint="hint_list" onclick="sendHint(STRINGS[currentLang].hint_list)">List files</div>
       <div class="pill" data-i18n="pill_create" data-hint="hint_create" onclick="sendHint(STRINGS[currentLang].hint_create)">Create file</div>
       <div class="pill" data-i18n="pill_read" data-hint="hint_read" onclick="sendHint(STRINGS[currentLang].hint_read)">Read file</div>
-      <div class="pill" data-i18n="pill_search" data-hint="hint_search" onclick="sendHint(STRINGS[currentLang].hint_search)">Web search</div>
+      <div class="pill" data-i18n="pill_appt" data-hint="hint_appt" onclick="sendHint(STRINGS[currentLang].hint_appt)">Appointments</div>
     </div>
   </div>
 </div>
@@ -2336,7 +2307,7 @@ HTML_PAGE = """<!DOCTYPE html>
       title_history:      'Conversation history',
       // Empty state
       empty_title:        'LOCAL ASSISTENT',
-      empty_sub:          'Your personal assistant for files, web search, appointments and more.',
+      empty_sub:          'Your personal assistant for files, appointments, documents and more.',
       btn_guide_qr:       '📱 Smartphone access',
       btn_guide_memory:   '🧠 View & edit memories',
       btn_guide_appt:     '📅 Manage appointments',
@@ -2345,11 +2316,11 @@ HTML_PAGE = """<!DOCTYPE html>
       pill_list:   'List files',
       pill_create: 'Create file',
       pill_read:   'Read file',
-      pill_search: 'Web search',
+      pill_appt:   'Appointments',
       hint_list:   'Show me what is in the root directory',
       hint_create: 'Create a test.txt with Hello World',
       hint_read:   'What does the README.md say?',
-      hint_search: 'Search the web for recent news',
+      hint_appt:   'Show me my upcoming appointments',
       // Footer
       input_placeholder: 'Type a message\\u2026 (Enter = Send, Shift+Enter = new line)',
       title_memorize:    'Summarize conversation and save to memory',
@@ -2369,11 +2340,7 @@ HTML_PAGE = """<!DOCTYPE html>
       btn_new:        '+ New',
       label_category: 'Category:',
       btn_save_mem:   '\\u2713 Save',
-      // Search confirm modal
-      search_title: '🔍 Confirm web search',
-      search_desc:  'The agent wants to send the following query to DuckDuckGo:',
       btn_cancel:   'Cancel',
-      btn_search:   'Search',
       // History modal
       history_title:          '📜 Conversation History',
       history_desc:           'All saved messages (newest first). Persisted across sessions.',
@@ -2415,7 +2382,7 @@ HTML_PAGE = """<!DOCTYPE html>
       title_appointments: 'Termine',
       title_history:      'Gespr\\u00e4chsverlauf',
       empty_title:        'LOCAL ASSISTENT',
-      empty_sub:          'Dein pers\\u00f6nlicher Assistent f\\u00fcr Dateien, Websuche, Termine und mehr.',
+      empty_sub:          'Dein pers\\u00f6nlicher Assistent f\\u00fcr Dateien, Termine, Dokumente und mehr.',
       btn_guide_qr:       '📱 Smartphone-Zugriff',
       btn_guide_memory:   '🧠 Erinnerungen anzeigen & bearbeiten',
       btn_guide_appt:     '📅 Termine verwalten',
@@ -2423,11 +2390,11 @@ HTML_PAGE = """<!DOCTYPE html>
       pill_list:   'Dateien auflisten',
       pill_create: 'Datei erstellen',
       pill_read:   'Datei lesen',
-      pill_search: 'Websuche',
+      pill_appt:   'Termine',
       hint_list:   'Zeig mir, was im Root-Verzeichnis liegt',
       hint_create: 'Erstelle eine test.txt mit Hallo Welt',
       hint_read:   'Was steht in der README.md?',
-      hint_search: 'Suche im Web nach aktuellen Neuigkeiten',
+      hint_appt:   'Zeig mir meine n\\u00e4chsten Termine',
       input_placeholder: 'Nachricht eingeben\\u2026 (Enter = Senden, Shift+Enter = Zeilenumbruch)',
       title_memorize:    'Konversation zusammenfassen und in Memory speichern',
       title_attach:      'Datei anh\\u00e4ngen',
@@ -2443,10 +2410,7 @@ HTML_PAGE = """<!DOCTYPE html>
       btn_new:        '+ Neu',
       label_category: 'Kategorie:',
       btn_save_mem:   '\\u2713 Speichern',
-      search_title: '🔍 Websuche best\\u00e4tigen',
-      search_desc:  'Der Agent m\\u00f6chte folgende Suchanfrage an DuckDuckGo senden:',
       btn_cancel:   'Abbrechen',
-      btn_search:   'Suchen',
       history_title:          '📜 Gespr\\u00e4chsverlauf',
       history_desc:           'Alle gespeicherten Nachrichten (neueste zuerst). Wird \\u00fcber Sitzungen hinweg persistent gespeichert.',
       history_empty:          'Kein Gespr\\u00e4chsverlauf vorhanden.',
@@ -2787,9 +2751,8 @@ HTML_PAGE = """<!DOCTYPE html>
     read_file:         '📄',
     write_file:        '✍️',
     create_directory:  '📁',
-    web_search:        '🔍',
     save_memory:       '🧠',
-    list_memories:     '🧠',
+    list_memories:              '🧠',
     add_appointment:   '📅',
     list_appointments: '📅',
     create_docx:       '📝',
@@ -2950,9 +2913,6 @@ HTML_PAGE = """<!DOCTYPE html>
           if (event.type === 'tool_start') {
             const icon = TOOL_ICONS[event.tool] || '⚙';
             updateLoaderText(icon + '\\u2009' + event.tool + '…');
-          } else if (event.type === 'confirm_search') {
-            document.getElementById('search-confirm-query').textContent = event.query;
-            document.getElementById('search-confirm-modal').classList.add('open');
           } else if (event.type === 'answer') {
             removeLoader();
             appendMsg('agent', event.text, event.tool_trace);
@@ -3142,15 +3102,6 @@ HTML_PAGE = """<!DOCTYPE html>
     await loadMemories();
   }
 
-  // ── Search confirmation ───────────────────────────────────────────────────
-  async function respondSearch(approved) {
-    document.getElementById('search-confirm-modal').classList.remove('open');
-    await fetch('/search-confirm', {
-      method:  'POST',
-      headers: {'Content-Type': 'application/json'},
-      body:    JSON.stringify({ approved }),
-    });
-  }
 
   // ── History Modal ─────────────────────────────────────────────────────────
   async function openHistory() {
