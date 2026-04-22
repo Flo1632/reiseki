@@ -9,7 +9,7 @@
 [Setup]
 AppName=Reiseki
 AppVersion={#AppVersion}
-AppPublisher=Florian Zielasko
+AppPublisher=Florian
 AppPublisherURL=https://github.com/Flo1632/reiseki
 DefaultDirName={autopf}\Reiseki
 DefaultGroupName=Reiseki
@@ -146,25 +146,6 @@ begin
   end;
 end;
 
-procedure WriteUtf8File(FileName: String; Content: String);
-var
-  F: Integer;
-  BOM: AnsiString;
-  Data: AnsiString;
-begin
-  // Write UTF-8 BOM + content so Python can read with encoding="utf-8-sig"
-  F := FileCreate(FileName);
-  if F <> INVALID_HANDLE_VALUE then
-  begin
-    BOM := #$EF#$BB#$BF;
-    FileWrite(F, BOM[1], 3);
-    Data := Content;
-    if Length(Data) > 0 then
-      FileWrite(F, Data[1], Length(Data));
-    FileClose(F);
-  end;
-end;
-
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   WorkspacePath: String;
@@ -179,8 +160,9 @@ begin
     if not ForceDirectories(WorkspacePath) then
       MsgBox('Could not create workspace folder: ' + WorkspacePath, mbError, MB_OK);
 
-    // Write path as UTF-8 with BOM so Python reads it correctly on all locales
-    WriteUtf8File(ExpandConstant('{app}\workspace.txt'), WorkspacePath);
+    // SaveStringToFile writes UTF-8 in Inno Setup 6 — Python reads it with utf-8-sig
+    SaveStringToFile(ExpandConstant('{app}\workspace.txt'), WorkspacePath, False);
   end;
 end;
+
 
