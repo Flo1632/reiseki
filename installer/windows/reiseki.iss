@@ -45,7 +45,13 @@ Name: "{userdesktop}\Reiseki"; Filename: "{app}\Reiseki.exe"; Tasks: desktopicon
 Filename: "{app}\Reiseki.exe"; Description: "{cm:LaunchProgram,Reiseki}"; \
   Flags: nowait postinstall skipifsilent
 
+[UninstallDelete]
+Type: files; Name: "{app}\workspace.txt"
+
 [Code]
+var
+  WorkspacePage: TInputDirWizardPage;
+
 function OllamaInstalled(): Boolean;
 begin
   Result := FileExists(ExpandConstant('{localappdata}\Programs\Ollama\ollama.exe'));
@@ -67,6 +73,114 @@ begin
       mbError,
       MB_OK
     );
-    Result := False; // abort installation
+    Result := False;
   end;
 end;
+
+procedure InitializeWizard;
+begin
+  WorkspacePage := CreateInputDirPage(
+    wpSelectDir,
+    'Select Workspace Folder',
+    'Choose the folder where Reiseki will read and write your files.',
+    'A new folder will be created here for Reiseki to work in. ' +
+    'Leave the default or pick a different location.',
+    False,
+    'Reiseki Workspace'
+  );
+  WorkspacePage.Add('');
+  WorkspacePage.Values[0] := ExpandConstant('{userdocs}\Reiseki');
+end;
+
+function IsUnsafePath(P: String): Boolean;
+var
+  WinDir, ProgFiles, ProgFiles86, ProgData, AppDir: String;
+begin
+  Result := False;
+  WinDir     := ExpandConstant('{win}');
+  ProgFiles  := ExpandConstant('{pf}');
+  ProgFiles86:= ExpandConstant('{pf32}');
+  ProgData   := ExpandConstant('{commonappdata}');
+  AppDir     := ExpandConstant('{app}');
+  // Reject if the path starts with any system directory
+  if (Pos(LowerCase(WinDir),      LowerCase(P)) = 1) or
+     (Pos(LowerCase(ProgFiles),   LowerCase(P)) = 1) or
+     (Pos(LowerCase(ProgFiles86), LowerCase(P)) = 1) or
+     (Pos(LowerCase(ProgData),    LowerCase(P)) = 1) or
+     (Pos(LowerCase(AppDir),      LowerCase(P)) = 1) then
+    Result := True;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  P: String;
+begin
+  Result := True;
+  if CurPageID = WorkspacePage.ID then
+  begin
+    P := WorkspacePage.Values[0];
+    if P = '' then
+    begin
+      MsgBox('Please enter a workspace folder path.', mbError, MB_OK);
+      Result := False; Exit;
+    end;
+    if Length(P) > 260 then
+    begin
+      MsgBox('The path is too long (max 260 characters).', mbError, MB_OK);
+      Result := False; Exit;
+    end;
+    if (Pos('\\', Copy(P, 1, 2)) = 1) then
+    begin
+      MsgBox('Network paths (\\server\share) are not supported.', mbError, MB_OK);
+      Result := False; Exit;
+    end;
+    if IsUnsafePath(P) then
+    begin
+      MsgBox(
+        'Please choose a folder inside your user profile (e.g. Documents\Reiseki).' + #13#10 +
+        'System and program directories are not allowed.',
+        mbError, MB_OK
+      );
+      Result := False; Exit;
+    end;
+  end;
+end;
+
+procedure WriteUtf8File(FileName: String; Content: String);
+var
+  F: Integer;
+  BOM: AnsiString;
+  Data: AnsiString;
+begin
+  // Write UTF-8 BOM + content so Python can read with encoding="utf-8-sig"
+  F := FileCreate(FileName);
+  if F <> INVALID_HANDLE_VALUE then
+  begin
+    BOM := #$EF#$BB#$BF;
+    FileWrite(F, BOM[1], 3);
+    Data := Content;
+    if Length(Data) > 0 then
+      FileWrite(F, Data[1], Length(Data));
+    FileClose(F);
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  WorkspacePath: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    WorkspacePath := WorkspacePage.Values[0];
+    if WorkspacePath = '' then
+      WorkspacePath := ExpandConstant('{userdocs}\Reiseki');
+
+    // Create the workspace directory
+    if not ForceDirectories(WorkspacePath) then
+      MsgBox('Could not create workspace folder: ' + WorkspacePath, mbError, MB_OK);
+
+    // Write path as UTF-8 with BOM so Python reads it correctly on all locales
+    WriteUtf8File(ExpandConstant('{app}\workspace.txt'), WorkspacePath);
+  end;
+end;
+
