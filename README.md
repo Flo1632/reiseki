@@ -41,7 +41,8 @@ Reiseki runs inference locally and does not require a cloud LLM API. It provides
 > [!CAUTION]
 > Reiseki restricts file access to `AGENT_ROOT`, but it is not a sandbox or security boundary. For sensitive use cases, run it in a dedicated workspace, VM, or container.
 
-> [!LAN access:] When the smartphone toggle is enabled, any device on the same network can reach the agent without authentication. Only enable this on a trusted private network (e.g. your home Wi-Fi). Never use it on public or shared networks such as hotels, cafés, or offices.
+> [!IMPORTANT:]
+> LAN access: When the smartphone toggle is enabled, any device on the same network can reach the agent without authentication. Only enable this on a trusted private network (e.g. your home Wi-Fi). Never use it on public or shared networks such as hotels, cafés, or offices.
 
 > [!IMPORTANT]
 > `AGENT_ROOT` defines the workspace the agent may access.  
