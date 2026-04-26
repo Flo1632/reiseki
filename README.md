@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="docs/ReisekiIntro.gif" alt="Reiseki Intro" width="720">
-</p>
+
 
 # Reiseki — Local-first AI assistant for files, reminders, and document generation
 
@@ -9,6 +7,11 @@ Reiseki runs inference locally and does not require a cloud LLM API. It provides
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-green)
 ![Ollama](https://img.shields.io/badge/Ollama-local-orange)
+
+---
+<p align="center">
+  <img src="docs/ReisekiIntro.gif" alt="Reiseki Intro" width="720">
+</p>
 
 ---
 
