@@ -166,15 +166,6 @@ AGENT_MODEL=gemma4:e2b AGENT_ROOT=~/documents python agent/agent.py
 | Desktop wrapper | pywebview |
 | Frontend | HTML / CSS / JavaScript |
 
-## Notes
-
-- LAN access is **off by default**
-- v0.1.3 adds:
-  - LAN toggle in the UI
-  - PDF read support
-  - PDF creation support
-  - model switching in the UI without restart
-
 ---
 
 ## Disclaimer
