@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/ReisekiIntro.gif" alt="Reiseki Intro" width="720">
+</p>
+
 # Reiseki — Local-first AI assistant for files, reminders, and document generation
 
 Reiseki runs inference locally and does not require a cloud LLM API. It provides a FastAPI-based chat UI, optional desktop packaging via pywebview, local SQLite memory, and tool access for files, reminders, documents, and lightweight data analysis.
